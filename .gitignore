@@ -4,4 +4,4 @@ __pycache__/
 *.pyo
 *.pyd
 
-poetry.lock
+.env
