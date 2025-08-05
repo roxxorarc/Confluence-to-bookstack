@@ -1,7 +1,7 @@
 import argparse
 from dotenv import dotenv_values
 import logging
-from etl import extract_confluence_data, transform_data, load_data_to_bookstack, load_with_attachments
+from confluence_to_bookstack import ConfluenceToBookstack
 
 
 def parser_setup():
@@ -11,18 +11,17 @@ def parser_setup():
     return parser
 
 
-
 def main():
     parser = parser_setup()
     args = parser.parse_args()
     config = dotenv_values(".env")
-
-    data = extract_confluence_data(args.source_path)
-
+    config["source_path"] = args.source_path
+    config["attachments"] = args.attachments
+    migrator = ConfluenceToBookstack(config)
     if args.attachments:
-        load_with_attachments(data, config)
+        migrator.run()
     else:
-        load_data_to_bookstack(data, config)
+        migrator.run(attachments=True)
 
 
 if __name__ == "__main__":
