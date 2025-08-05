@@ -1,3 +1,4 @@
+import enum
 import logging
 import sys
 from typing import Optional
@@ -19,10 +20,10 @@ class Logger:
 
     def _setup_logger(self):
         self._logger = logging.getLogger("confluence_to_bookstack")
-        self._logger.setLevel(logging.INFO)
+        self._logger.setLevel(logging.DEBUG)
         if not self._logger.handlers:
             console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
+            console_handler.setLevel(logging.DEBUG)
 
             formatter = logging.Formatter(
                 "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -44,10 +45,20 @@ class Logger:
     def debug(self, message: str):
         self._logger.debug(message)
 
-    def set_level(self, level: int):
-        self._logger.setLevel(level)
-        for handler in self._logger.handlers:
-            handler.setLevel(level)
-
 
 logger = Logger()
+
+
+class DepthLevel(enum.Enum):
+    SHELF = 1
+    BOOK = 2
+    CHAPTER = 3
+    PAGE = 4
+
+    @classmethod
+    def from_level(cls, level: int) -> "DepthLevel":
+        if level < 1:
+            raise ValueError("Level must be at least 1")
+        elif level > 4:
+            return cls.PAGE
+        return cls(level)
