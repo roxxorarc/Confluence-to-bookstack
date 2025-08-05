@@ -1,3 +1,4 @@
+from dotenv import dotenv_values
 from pydantic import BaseModel
 import argparse
 
@@ -7,7 +8,10 @@ class Config(BaseModel):
         extra = "allow"
 
     @classmethod
-    def from_env_and_args(cls, env_values: dict, args: argparse.Namespace):
+    def load(cls):
+        env_values = dotenv_values(".env")
+        args = parser_setup()
+
         config_data = env_values.copy()
         cli_overrides = {
             "SOURCE_PATH": args.source_path,
@@ -26,4 +30,5 @@ def parser_setup():
     parser.add_argument("-url", "--bookstack-url", help="BookStack API URL")
     parser.add_argument("-id", "--bookstack-id", help="BookStack API ID")
     parser.add_argument("-secret", "--bookstack-secret", help="BookStack API Secret")
-    return parser
+    args = parser.parse_args()
+    return args
