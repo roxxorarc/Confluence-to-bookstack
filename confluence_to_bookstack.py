@@ -6,10 +6,5 @@ class ConfluenceToBookstack:
         self.config = config
         self.data = None
 
-    def run(self, attachments: bool = False):
-        print(self.config.source_path)
-
-        if self.config.attachments:
-            pass
-        else:
-            pass
+    def run(self):
+        pass
