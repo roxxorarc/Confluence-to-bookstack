@@ -55,6 +55,9 @@ class DepthLevel(enum.Enum):
     CHAPTER = 3
     PAGE = 4
 
+    def __str__(self):
+        return self.name.title()
+
     @classmethod
     def from_level(cls, level: int) -> "DepthLevel":
         if level < 1:
