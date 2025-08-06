@@ -14,6 +14,10 @@ class ConfluenceToBookstack:
         self.headers = {
             "Authorization": f'Token {getattr(config, "BOOKSTACK_API_ID", "")}:{getattr(config, "BOOKSTACK_API_SECRET", "")}'
         }
+        self.created_shelves = {}
+        self.created_books = {}
+        self.created_chapters = {}
+        self.created_pages = {}
 
     @lru_cache(maxsize=128)
     def _read_file_cached(self, file_path: str) -> Optional[str]:
@@ -24,9 +28,38 @@ class ConfluenceToBookstack:
             logger.error(f"Error reading file {file_path}: {e}")
             return None
 
+    def _add_shelf(self, item: Dict, shelf_id):
+        self.created_shelves[shelf_id] = {
+            "title": item["title"],
+            "id": shelf_id,
+        }
+
+    def _add_book(self, item: Dict, shelf_id, book_id):
+        self.created_books[book_id] = {
+            "title": item["title"],
+            "id": book_id,
+            "shelf_id": shelf_id,
+        }
+
+    
+    def _add_chapter(self, item: Dict, chapter_id):
+        self.created_chapters[chapter_id] = {
+            "title": item["title"],
+            "id": chapter_id,
+        }
+
+    def _add_page(self, item: Dict, page_id):
+        self.created_pages[page_id] = {
+            "title": item["title"],
+            "id": page_id,
+        }
+
     def run(self):
         self.test_bookstack_endpoints()
         self.find_index_files()
+        self.link_books_to_shelves()
+        self.print_report()
+        
 
     def test_bookstack_endpoints(self):
         try:
@@ -140,37 +173,51 @@ class ConfluenceToBookstack:
         else:
             logger.warning("No hierarchy found in the index.html file.")
 
-        self.print_report()
-
     def process_data(self, data: Dict):
         for item in data.get("hierarchy", []):
             self.process_item(item)
 
     def print_report(self):
-        pass
+        logger.info("FINAL MIGRATION REPORT")
+        logger.info(f"Shelves created: {len(self.created_shelves)}")
+        logger.info(f"Books created: {len(self.created_books)}")
+        logger.info(f"Chapters created: {len(self.created_chapters)}")
+        logger.info(f"Pages created: {len(self.created_pages)}")
 
     def process_item(self, item: Dict, shelf_id: Optional[str] = None, 
                      book_id: Optional[str] = None, chapter_id: Optional[str] = None):
         match item["type"]:
             case DepthLevel.SHELF:
                 shelf_id = self.add_item(DepthLevel.SHELF, "/shelves", item)
-                
+                self._add_shelf(item, shelf_id)
+
             case DepthLevel.BOOK:
                 if item.get("children") == []:
                     book_id = self.add_item(DepthLevel.BOOK, "/books", item)
-                    self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                    self._add_book(item, shelf_id, book_id)
+                    self._add_page(item, page_id)
                 else:
                     book_id = self.add_item(DepthLevel.BOOK, "/books", item)
-                    
+                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                    self._add_page(item, page_id)
+                    self._add_book(item, shelf_id, book_id)
+
             case DepthLevel.CHAPTER:
                 if item.get("children") == []:
-                    self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                    # relevant to create chapter then page ?
+                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                    self._add_page(item, page_id)
                 else:
                     chapter_id = self.add_item(DepthLevel.CHAPTER, "/chapters", item, {"book_id": book_id})
+                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id, "chapter_id": chapter_id})
+                    self._add_chapter(item, chapter_id)
+                    self._add_page(item, page_id)
                     
             case DepthLevel.PAGE:
-                self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id, "chapter_id": chapter_id})
-                
+                page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id, "chapter_id": chapter_id})
+                self._add_page(item, page_id)
+
             case _:
                 logger.warning(f"Unknown type for item: {item['title']}")
                 
@@ -185,7 +232,6 @@ class ConfluenceToBookstack:
             logger.info(f"{str(type)} created: '{title}' (ID: {item_id})")
             return item_id
         else:
-            print(additional_data)
             logger.error(f"Failed to create {str(type)} '{title}': {response}")
             return None
 
@@ -202,19 +248,16 @@ class ConfluenceToBookstack:
         
         if item_type == DepthLevel.SHELF:
             inner_cell = soup.select_one("div.innerCell")
-            description = self._reconstruct_dom_content(inner_cell)
+            description = self.reconstruct_dom_content(inner_cell)
         else:
             main_content = soup.select_one("div#main-content")
 
             if main_content:
-                description = self._reconstruct_dom_content(main_content)
+                description = self.reconstruct_dom_content(main_content)
             else:
                 paragraphs = soup.select("p")[:3]
                 description = "".join(
-                    self._reconstruct_dom_content(p) for p in paragraphs)       
-                
-        print(f"Extracted title: {title}")
-        print(description)     
+                    self.reconstruct_dom_content(p) for p in paragraphs)    
         return title, description or f"<p>Content migrated from {file_path}</p>"
 
     def reconstruct_dom_content(self, element: Tag) -> str:
@@ -250,7 +293,7 @@ class ConfluenceToBookstack:
 
             for child in element.contents:
                 if hasattr(child, "name"):
-                    rebuilt_child = self._reconstruct_dom_content(child)
+                    rebuilt_child = self.reconstruct_dom_content(child)
                     if rebuilt_child:
                         new_elem.append(BeautifulSoup(rebuilt_child, "html.parser"))
                 else:
@@ -278,7 +321,7 @@ class ConfluenceToBookstack:
         match item_type:
             case DepthLevel.SHELF:
                 base_payload.update({"description_html": description, "books": []})
-            case DepthLevel.BOOK | DepthLevel.CHAPTER:
+            case DepthLevel.CHAPTER:
                 base_payload["description_html"] = description
             case DepthLevel.PAGE:
                 base_payload["html"] = description
@@ -286,3 +329,36 @@ class ConfluenceToBookstack:
             base_payload.update(additional_data)
 
         return base_payload, title
+
+    def link_books_to_shelves(self):
+        for shelf in self.created_shelves.values():
+            shelf_id = shelf["id"]
+
+            associated_books = []
+            for book in self.created_books.values():
+                if book.get("shelf_id") == shelf_id:
+                    associated_books.append(book["id"])
+
+            if associated_books:
+                success, shelf_info = self.api_request("GET", f"/shelves/{shelf_id}")
+                if success:
+                    update_payload = {
+                        "name": shelf_info.get("name"),
+                        "description_html": shelf_info.get("description_html", ""),
+                        "books": associated_books,
+                        "tags": shelf_info.get("tags", []),
+                    }
+
+                    success, response = self.api_request(
+                        "PUT", f"/shelves/{shelf_id}", update_payload
+                    )
+                    if success:
+                        logger.info(
+                            f"Shelf '{shelf['title']}' updated with {len(associated_books)} book(s)"
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to update shelf '{shelf['title']}': {response}"
+                        )
+                        
+                        
