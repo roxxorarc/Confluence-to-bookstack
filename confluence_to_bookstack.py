@@ -5,7 +5,7 @@ import os
 from typing import Dict, Optional, Tuple
 from bs4 import BeautifulSoup, Tag
 import requests
-from utils import logger, DepthLevel
+from utils import img_to_b64, logger, DepthLevel
 
 
 class ConfluenceToBookstack:
@@ -21,8 +21,8 @@ class ConfluenceToBookstack:
             "pages": {},
         }
         self.deleted_objects = {
-            "shelves": 0,
-            "books": 0,
+            "shelf": 0,
+            "book": 0,
         }
         
         self.errors = 0
@@ -49,7 +49,6 @@ class ConfluenceToBookstack:
             "shelf_id": shelf_id,
         }
 
-    
     def _add_chapter(self, item: Dict, chapter_id):
         self.created_objects["chapters"][chapter_id] = {
             "title": item["title"],
@@ -67,6 +66,69 @@ class ConfluenceToBookstack:
         self.find_index_files()
         self.link_books_to_shelves()
         self.print_report()
+
+    def link_books_to_shelves(self):
+        for shelf in self.created_objects["shelves"].values():
+            shelf_id = shelf["id"]
+
+            associated_books = []
+            for book in self.created_objects["books"].values():
+                if book.get("shelf_id") == shelf_id:
+                    associated_books.append(book["id"])
+
+            if associated_books:
+                success, shelf_info = self.api_request("GET", f"/shelves/{shelf_id}")
+                if success:
+                    update_payload = {
+                        "name": shelf_info.get("name"),
+                        "description_html": shelf_info.get("description_html", ""),
+                        "books": associated_books,
+                        "tags": shelf_info.get("tags", []),
+                    }
+
+                    success, response = self.api_request(
+                        "PUT", f"/shelves/{shelf_id}", update_payload
+                    )
+                    if success:
+                        logger.info(
+                            f"Shelf '{shelf['title']}' updated with {len(associated_books)} book(s)"
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to update shelf '{shelf['title']}': {response}"
+                        )
+                        self.errors += 1
+
+    def clear(self):
+        logger.info("Clearing existing BookStack content")
+        targets = [
+            ("shelf", "/shelves"),
+            ("book", "/books")
+        ]
+
+        for name, endpoint in targets:
+            success, response = self.api_request("GET", endpoint)
+            if not success:
+                logger.error(f"Failed to retrieve {name}s: {response}")
+                self.errors += 1
+                continue
+                
+            items = response.get("data", [])
+            logger.info(f"Found {len(items)} {name}s to delete")
+            
+            for item in items:
+                item_id = item.get("id")
+                item_name = item.get("name", "Unknown")
+                if item_id:
+                    success, _ = self.api_request("DELETE", f"{endpoint}/{item_id}")
+                    if success:
+                        logger.info(f"Deleted {name}: '{item_name}' (ID: {item_id})")
+                        self.deleted_objects[name] += 1
+                    else:
+                        logger.error(f"Failed to delete {name} '{item_name}'")
+                        self.errors += 1
+        
+        self.print_report(clear=True)
         
     def test_bookstack_endpoints(self):
         try:
@@ -192,8 +254,8 @@ class ConfluenceToBookstack:
     def print_report(self, clear: bool = False):
         """Prints a summary report of the migration process"""
         if clear:
-            logger.info(f"Shelves cleared: {self.deleted_objects['shelves']}")
-            logger.info(f"Books cleared: {self.deleted_objects['books']}")
+            logger.info(f"Shelves cleared: {self.deleted_objects['shelf']}")
+            logger.info(f"Books cleared: {self.deleted_objects['book']}")
         else:        
             logger.info(f"Shelves created: {len(self.created_objects['shelves'])}")
             logger.info(f"Books created: {len(self.created_objects['books'])}")
@@ -339,66 +401,3 @@ class ConfluenceToBookstack:
             base_payload.update(additional_data)
 
         return base_payload, title
-
-    def link_books_to_shelves(self):
-        for shelf in self.created_objects["shelves"].values():
-            shelf_id = shelf["id"]
-
-            associated_books = []
-            for book in self.created_objects["books"].values():
-                if book.get("shelf_id") == shelf_id:
-                    associated_books.append(book["id"])
-
-            if associated_books:
-                success, shelf_info = self.api_request("GET", f"/shelves/{shelf_id}")
-                if success:
-                    update_payload = {
-                        "name": shelf_info.get("name"),
-                        "description_html": shelf_info.get("description_html", ""),
-                        "books": associated_books,
-                        "tags": shelf_info.get("tags", []),
-                    }
-
-                    success, response = self.api_request(
-                        "PUT", f"/shelves/{shelf_id}", update_payload
-                    )
-                    if success:
-                        logger.info(
-                            f"Shelf '{shelf['title']}' updated with {len(associated_books)} book(s)"
-                        )
-                    else:
-                        logger.error(
-                            f"Failed to update shelf '{shelf['title']}': {response}"
-                        )
-                        self.errors += 1
-
-    def clear(self):
-        logger.info("Clearing existing BookStack content")
-        targets = [
-            ("shelf", "/shelves"),
-            ("book", "/books")
-        ]
-
-        for name, endpoint in targets:
-            success, response = self.api_request("GET", endpoint)
-            if not success:
-                logger.error(f"Failed to retrieve {name}s: {response}")
-                self.errors += 1
-                continue
-                
-            items = response.get("data", [])
-            logger.info(f"Found {len(items)} {name}s to delete")
-            
-            for item in items:
-                item_id = item.get("id")
-                item_name = item.get("name", "Unknown")
-                if item_id:
-                    success, _ = self.api_request("DELETE", f"{endpoint}/{item_id}")
-                    if success:
-                        logger.info(f"Deleted {name}: '{item_name}' (ID: {item_id})")
-                        self.deleted_objects[name] += 1
-                    else:
-                        logger.error(f"Failed to delete {name} '{item_name}'")
-                        self.errors += 1
-        
-        self.print_report(clear=True)
