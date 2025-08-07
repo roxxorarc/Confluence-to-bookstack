@@ -68,7 +68,6 @@ class ConfluenceToBookstack:
         self.link_books_to_shelves()
         self.print_report()
         
-
     def test_bookstack_endpoints(self):
         try:
             if not self.config.BOOKSTACK_URL:
@@ -93,6 +92,7 @@ class ConfluenceToBookstack:
     def api_request(
         self, method: str, endpoint: str, data: Dict = None
     ) -> Tuple[bool, Dict]:
+        """Makes an API request to BookStack and returns success status and response data"""
 
         url = f"{self.config.BOOKSTACK_URL}{endpoint}"
 
@@ -190,6 +190,7 @@ class ConfluenceToBookstack:
             self.process_item(item)
 
     def print_report(self, clear: bool = False):
+        """Prints a summary report of the migration process"""
         if clear:
             logger.info(f"Shelves cleared: {self.deleted_objects['shelves']}")
             logger.info(f"Books cleared: {self.deleted_objects['books']}")
@@ -209,27 +210,20 @@ class ConfluenceToBookstack:
                 self._add_shelf(item, shelf_id)
 
             case DepthLevel.BOOK:
-                if item.get("children") == []:
-                    book_id = self.add_item(DepthLevel.BOOK, "/books", item)
-                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
-                    self._add_book(item, shelf_id, book_id)
-                    self._add_page(item, page_id)
-                else:
-                    book_id = self.add_item(DepthLevel.BOOK, "/books", item)
-                    page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
-                    self._add_page(item, page_id)
-                    self._add_book(item, shelf_id, book_id)
+                book_id = self.add_item(DepthLevel.BOOK, "/books", item)
+                page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
+                self._add_book(item, shelf_id, book_id)
+                self._add_page(item, page_id)
 
             case DepthLevel.CHAPTER:
                 if item.get("children") == []:
                     # relevant to create chapter then page ?
                     page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id})
-                    self._add_page(item, page_id)
                 else:
                     chapter_id = self.add_item(DepthLevel.CHAPTER, "/chapters", item, {"book_id": book_id})
                     page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id, "chapter_id": chapter_id})
                     self._add_chapter(item, chapter_id)
-                    self._add_page(item, page_id)
+                self._add_page(item, page_id)
                     
             case DepthLevel.PAGE:
                 page_id = self.add_item(DepthLevel.PAGE, "/pages", item, {"book_id": book_id, "chapter_id": chapter_id})
@@ -242,6 +236,7 @@ class ConfluenceToBookstack:
             self.process_item(child, shelf_id, book_id, chapter_id)
 
     def add_item(self, type: DepthLevel, endpoint: str, item: Dict, additional_data: Dict = None):
+        """Creates an item in BookStack and returns its ID"""
         payload, title = self.generate_payload(item, type, additional_data)
         success, response = self.api_request("POST", endpoint, payload)
         if success:
@@ -320,6 +315,7 @@ class ConfluenceToBookstack:
 
         except Exception as e:
             logger.error(f"Error reconstructing content: {e}")
+            self.errors += 1
             return str(element) if element else ""
 
     def generate_payload(self, item: Dict, item_type: DepthLevel, additional_data: Dict = None) -> Dict:
@@ -375,49 +371,34 @@ class ConfluenceToBookstack:
                             f"Failed to update shelf '{shelf['title']}': {response}"
                         )
                         self.errors += 1
-                        
+
     def clear(self):
         logger.info("Clearing existing BookStack content")
-        success, response = self.api_request("GET", "/shelves")
-        if success:
-            shelves = response.get("data", [])
-            logger.info(f"Found {len(shelves)} shelves to delete")
-            
-            for shelf in shelves:
-                shelf_id = shelf.get("id")
-                shelf_name = shelf.get("name", "Unknown")
-                
-                if shelf_id:
-                    success, delete_response = self.api_request("DELETE", f"/shelves/{shelf_id}")
-                    if success:
-                        logger.info(f"Deleted shelf: '{shelf_name}' (ID: {shelf_id})")
-                        self.deleted_objects["shelves"] += 1
-                    else:
-                        logger.error(f"Failed to delete shelf '{shelf_name}': {delete_response}")
-                        self.errors += 1
-        else:
-            logger.error(f"Failed to retrieve shelves: {response}")
-            self.errors += 1
+        targets = [
+            ("shelf", "/shelves"),
+            ("book", "/books")
+        ]
 
-        success, response = self.api_request("GET", "/books")
-        if success:
-            books = response.get("data", [])
-            logger.info(f"Found {len(books)} books to delete")
-            
-            for book in books:
-                book_id = book.get("id")
-                book_name = book.get("name", "Unknown")
+        for name, endpoint in targets:
+            success, response = self.api_request("GET", endpoint)
+            if not success:
+                logger.error(f"Failed to retrieve {name}s: {response}")
+                self.errors += 1
+                continue
                 
-                if book_id:
-                    success, delete_response = self.api_request("DELETE", f"/books/{book_id}")
+            items = response.get("data", [])
+            logger.info(f"Found {len(items)} {name}s to delete")
+            
+            for item in items:
+                item_id = item.get("id")
+                item_name = item.get("name", "Unknown")
+                if item_id:
+                    success, _ = self.api_request("DELETE", f"{endpoint}/{item_id}")
                     if success:
-                        logger.info(f"Deleted book: '{book_name}' (ID: {book_id})")
-                        self.deleted_objects["books"] += 1
+                        logger.info(f"Deleted {name}: '{item_name}' (ID: {item_id})")
+                        self.deleted_objects[name] += 1
                     else:
-                        logger.error(f"Failed to delete book '{book_name}': {delete_response}")
+                        logger.error(f"Failed to delete {name} '{item_name}'")
                         self.errors += 1
-        else:
-            logger.error(f"Failed to retrieve books: {response}")
-            self.errors += 1
-
+        
         self.print_report(clear=True)
