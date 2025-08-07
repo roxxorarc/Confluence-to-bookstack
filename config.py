@@ -1,3 +1,4 @@
+from typing import Optional
 from dotenv import dotenv_values
 from pydantic import BaseModel
 import argparse
@@ -8,10 +9,8 @@ class Config(BaseModel):
         extra = "allow"
 
     @classmethod
-    def load(cls):
+    def load(cls, args: Optional[argparse.Namespace] = None):
         env_values = dotenv_values(".env")
-        args = parser_setup()
-
         config_data = env_values.copy()
         cli_overrides = {
             "SOURCE_PATH": args.source_path,
@@ -30,5 +29,6 @@ def parser_setup():
     parser.add_argument("-url", "--bookstack-url", help="BookStack API URL")
     parser.add_argument("-id", "--bookstack-id", help="BookStack API ID")
     parser.add_argument("-secret", "--bookstack-secret", help="BookStack API Secret")
+    parser.add_argument("-c", "--clear", action="store_true", help="Clear existing BookStack content before migration")
     args = parser.parse_args()
     return args

@@ -14,10 +14,18 @@ class ConfluenceToBookstack:
         self.headers = {
             "Authorization": f'Token {getattr(config, "BOOKSTACK_API_ID", "")}:{getattr(config, "BOOKSTACK_API_SECRET", "")}'
         }
-        self.created_shelves = {}
-        self.created_books = {}
-        self.created_chapters = {}
-        self.created_pages = {}
+        self.created_objects = {
+            "shelves": {},
+            "books": {},
+            "chapters": {},
+            "pages": {},
+        }
+        self.deleted_objects = {
+            "shelves": 0,
+            "books": 0,
+        }
+        
+        self.errors = 0
 
     @lru_cache(maxsize=128)
     def _read_file_cached(self, file_path: str) -> Optional[str]:
@@ -29,13 +37,13 @@ class ConfluenceToBookstack:
             return None
 
     def _add_shelf(self, item: Dict, shelf_id):
-        self.created_shelves[shelf_id] = {
+        self.created_objects["shelves"][shelf_id] = {
             "title": item["title"],
             "id": shelf_id,
         }
 
     def _add_book(self, item: Dict, shelf_id, book_id):
-        self.created_books[book_id] = {
+        self.created_objects["books"][book_id] = {
             "title": item["title"],
             "id": book_id,
             "shelf_id": shelf_id,
@@ -43,13 +51,13 @@ class ConfluenceToBookstack:
 
     
     def _add_chapter(self, item: Dict, chapter_id):
-        self.created_chapters[chapter_id] = {
+        self.created_objects["chapters"][chapter_id] = {
             "title": item["title"],
             "id": chapter_id,
         }
 
     def _add_page(self, item: Dict, page_id):
-        self.created_pages[page_id] = {
+        self.created_objects["pages"][page_id] = {
             "title": item["title"],
             "id": page_id,
         }
@@ -95,10 +103,14 @@ class ConfluenceToBookstack:
                 response = requests.post(url, headers=self.headers, json=data)
             elif method.upper() == "PUT":
                 response = requests.put(url, headers=self.headers, json=data)
+            elif method.upper() == "DELETE":
+                response = requests.delete(url, headers=self.headers)
             else:
                 return False, {"error": f"Unsupported method: {method}"}
 
-            if response.status_code in [200, 201]:
+            if response.status_code in [200, 201, 204]:
+                if response.status_code == 204:
+                    return True, {}
                 return True, response.json()
             else:
                 return False, {
@@ -177,12 +189,17 @@ class ConfluenceToBookstack:
         for item in data.get("hierarchy", []):
             self.process_item(item)
 
-    def print_report(self):
-        logger.info("FINAL MIGRATION REPORT")
-        logger.info(f"Shelves created: {len(self.created_shelves)}")
-        logger.info(f"Books created: {len(self.created_books)}")
-        logger.info(f"Chapters created: {len(self.created_chapters)}")
-        logger.info(f"Pages created: {len(self.created_pages)}")
+    def print_report(self, clear: bool = False):
+        if clear:
+            logger.info(f"Shelves cleared: {self.deleted_objects['shelves']}")
+            logger.info(f"Books cleared: {self.deleted_objects['books']}")
+        else:        
+            logger.info(f"Shelves created: {len(self.created_objects['shelves'])}")
+            logger.info(f"Books created: {len(self.created_objects['books'])}")
+            logger.info(f"Chapters created: {len(self.created_objects['chapters'])}")
+            logger.info(f"Pages created: {len(self.created_objects['pages'])}")
+            
+        logger.info(f"Errors encountered: {self.errors}")
 
     def process_item(self, item: Dict, shelf_id: Optional[str] = None, 
                      book_id: Optional[str] = None, chapter_id: Optional[str] = None):
@@ -233,15 +250,12 @@ class ConfluenceToBookstack:
             return item_id
         else:
             logger.error(f"Failed to create {str(type)} '{title}': {response}")
+            self.errors += 1
             return None
 
     def extract_content_from_file(self, file_path: str, item_type: DepthLevel) -> Tuple[str, str]:
         full_path = self.config.SOURCE_PATH + "/" + file_path
         content = self._read_file_cached(str(full_path))
-        
-        
-        if not content:
-            return "Error", f"<p>Error generating content</p>"
 
         soup = BeautifulSoup(content, "html.parser")
         title = soup.title.get_text(strip=True)
@@ -258,7 +272,7 @@ class ConfluenceToBookstack:
                 paragraphs = soup.select("p")[:3]
                 description = "".join(
                     self.reconstruct_dom_content(p) for p in paragraphs)    
-        return title, description or f"<p>Content migrated from {file_path}</p>"
+        return title, description
 
     def reconstruct_dom_content(self, element: Tag) -> str:
         if not element:
@@ -331,11 +345,11 @@ class ConfluenceToBookstack:
         return base_payload, title
 
     def link_books_to_shelves(self):
-        for shelf in self.created_shelves.values():
+        for shelf in self.created_objects["shelves"].values():
             shelf_id = shelf["id"]
 
             associated_books = []
-            for book in self.created_books.values():
+            for book in self.created_objects["books"].values():
                 if book.get("shelf_id") == shelf_id:
                     associated_books.append(book["id"])
 
@@ -360,5 +374,50 @@ class ConfluenceToBookstack:
                         logger.error(
                             f"Failed to update shelf '{shelf['title']}': {response}"
                         )
+                        self.errors += 1
                         
-                        
+    def clear(self):
+        logger.info("Clearing existing BookStack content")
+        success, response = self.api_request("GET", "/shelves")
+        if success:
+            shelves = response.get("data", [])
+            logger.info(f"Found {len(shelves)} shelves to delete")
+            
+            for shelf in shelves:
+                shelf_id = shelf.get("id")
+                shelf_name = shelf.get("name", "Unknown")
+                
+                if shelf_id:
+                    success, delete_response = self.api_request("DELETE", f"/shelves/{shelf_id}")
+                    if success:
+                        logger.info(f"Deleted shelf: '{shelf_name}' (ID: {shelf_id})")
+                        self.deleted_objects["shelves"] += 1
+                    else:
+                        logger.error(f"Failed to delete shelf '{shelf_name}': {delete_response}")
+                        self.errors += 1
+        else:
+            logger.error(f"Failed to retrieve shelves: {response}")
+            self.errors += 1
+
+        success, response = self.api_request("GET", "/books")
+        if success:
+            books = response.get("data", [])
+            logger.info(f"Found {len(books)} books to delete")
+            
+            for book in books:
+                book_id = book.get("id")
+                book_name = book.get("name", "Unknown")
+                
+                if book_id:
+                    success, delete_response = self.api_request("DELETE", f"/books/{book_id}")
+                    if success:
+                        logger.info(f"Deleted book: '{book_name}' (ID: {book_id})")
+                        self.deleted_objects["books"] += 1
+                    else:
+                        logger.error(f"Failed to delete book '{book_name}': {delete_response}")
+                        self.errors += 1
+        else:
+            logger.error(f"Failed to retrieve books: {response}")
+            self.errors += 1
+
+        self.print_report(clear=True)

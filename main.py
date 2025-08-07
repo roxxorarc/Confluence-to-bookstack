@@ -1,18 +1,18 @@
 from confluence_to_bookstack import ConfluenceToBookstack
-from config import Config
-from utils import setup_logging
+from config import Config, parser_setup
+from utils import logger
+
 
 def main():
-    logger = setup_logging()
-    config = Config.load()
-
+    args = parser_setup()
+    config = Config.load(args)
     migrator = ConfluenceToBookstack(config)
-
+    if args.clear:
+        migrator.clear()
+        logger.info("Data cleared")
+        exit(0)
     try:
         migrator.run()
-        logger.info(
-            f"Migration started with config: {config.model_dump_json(indent=2)}"
-        )
     except Exception as e:
         logger.error(f"Migration failed: {e}")
 
