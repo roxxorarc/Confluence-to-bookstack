@@ -3,9 +3,10 @@ import json
 from operator import concat
 import os
 from typing import Dict, Optional, Tuple
+from uuid import uuid4
 from bs4 import BeautifulSoup, Tag
 import requests
-from utils import img_to_b64, logger, DepthLevel
+from utils import image_to_data_url, file_to_b64, is_image_file, logger, DepthLevel
 
 
 class ConfluenceToBookstack:
@@ -26,6 +27,12 @@ class ConfluenceToBookstack:
         }
         
         self.errors = 0
+        
+        self.attachments = {
+            "images": {},
+            "pdfs": {},
+            "other": {},
+        }
 
     @lru_cache(maxsize=128)
     def _read_file_cached(self, file_path: str) -> Optional[str]:
@@ -339,36 +346,60 @@ class ConfluenceToBookstack:
             if element.name is None:
                 return element.string.strip() if element.string else ""
 
+            if element.name == "img" and element.has_attr("src"):
+                if not element["src"].startswith(("data:", "http://", "https://")):
+                    file_path = self.config.SOURCE_PATH + "/" + element["src"]
+                    if is_image_file(file_path):
+                        image_data_url = image_to_data_url(file_path)
+                        element["src"] = image_data_url
+
+            elif element.name == "a" and element.has_attr("data-linked-resource-container-id"):
+                file_path = self.config.SOURCE_PATH + "/" + "attachments" + "/" + element["data-linked-resource-container-id"] + "/" + element["data-linked-resource-id"] + ".pdf"
+                container_id = element.get("data-linked-resource-container-id", "")
+                resource_id = element.get("data-linked-resource-id", "")
+                default_alias = element.get("data-linked-resource-default-alias", "")
+                
+                with open(file_path, "rb") as file:
+                    files = {
+                        'file': (f"{resource_id}.pdf", file, 'application/pdf')
+                    }
+                    success, response = requests.post(
+                        f"{self.config.BOOKSTACK_URL}/attachments",
+                        headers=self.headers,
+                        files=files,
+                        data={
+                            "name": default_alias,
+                            "uploaded_to": 4117
+                        }
+                    )
+                
+                print(success, response)
+
+                
             IMPORTANT_ATTRS = frozenset(
                 [
                     "id",
-                    "class",
                     "style",
                     "href",
                     "src",
-                    "alt",
                     "title",
                     "colspan",
-                    "rowspan",
-                    "width",
-                    "height",
+                    "rowspan"
                 ]
             )
-
+                
             new_soup = BeautifulSoup("", "html.parser")
             new_elem = new_soup.new_tag(element.name)
 
             for attr in IMPORTANT_ATTRS:
                 if element.has_attr(attr):
                     new_elem[attr] = element[attr]
-
             for child in element.contents:
                 if hasattr(child, "name"):
                     rebuilt_child = self.reconstruct_dom_content(child)
                     if rebuilt_child:
                         new_elem.append(BeautifulSoup(rebuilt_child, "html.parser"))
                 else:
-
                     text_content = str(child).strip()
                     if text_content:
                         new_elem.append(text_content)
@@ -401,3 +432,6 @@ class ConfluenceToBookstack:
             base_payload.update(additional_data)
 
         return base_payload, title
+    
+    def process_attachment(self, element: Tag):
+        logger.debug(f"Processing attachment for element: {element}")
