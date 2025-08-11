@@ -1,20 +1,18 @@
 from functools import lru_cache
-import json
-from operator import concat
 import os
 from typing import Dict, Optional, Tuple
-from uuid import uuid4
-from bs4 import BeautifulSoup, Tag
-import requests
-from utils import image_to_data_url, file_to_b64, is_image_file, logger, DepthLevel
+from bs4 import BeautifulSoup
+from utils import logger, DepthLevel
+from content_processor import ContentProcessor
+from bookstack_client import BookStackClient
 
 
 class ConfluenceToBookstack:
     def __init__(self, config):
         self.config = config
-        self.headers = {
-            "Authorization": f'Token {getattr(config, "BOOKSTACK_API_ID", "")}:{getattr(config, "BOOKSTACK_API_SECRET", "")}'
-        }
+        self.api_client = BookStackClient(config)
+        self.content_processor = ContentProcessor(config, self.api_client)
+        
         self.created_objects = {
             "shelves": {},
             "books": {},
@@ -27,12 +25,6 @@ class ConfluenceToBookstack:
         }
         
         self.errors = 0
-        
-        self.attachments = {
-            "images": {},
-            "pdfs": {},
-            "other": {},
-        }
 
     @lru_cache(maxsize=128)
     def _read_file_cached(self, file_path: str) -> Optional[str]:
@@ -41,6 +33,7 @@ class ConfluenceToBookstack:
                 return file.read()
         except Exception as e:
             logger.error(f"Error reading file {file_path}: {e}")
+            self.errors += 1
             return None
 
     def _add_shelf(self, item: Dict, shelf_id):
@@ -70,7 +63,7 @@ class ConfluenceToBookstack:
         }
 
     def run(self):
-        self.test_bookstack_endpoints()
+        self.api_client.test_endpoints()
         self.find_index_files()
         self.link_books_to_shelves()
         self.print_report()
@@ -85,7 +78,7 @@ class ConfluenceToBookstack:
                     associated_books.append(book["id"])
 
             if associated_books:
-                success, shelf_info = self.api_request("GET", f"/shelves/{shelf_id}")
+                success, shelf_info = self.api_client.request("GET", f"/shelves/{shelf_id}")
                 if success:
                     update_payload = {
                         "name": shelf_info.get("name"),
@@ -94,7 +87,7 @@ class ConfluenceToBookstack:
                         "tags": shelf_info.get("tags", []),
                     }
 
-                    success, response = self.api_request(
+                    success, response = self.api_client.request(
                         "PUT", f"/shelves/{shelf_id}", update_payload
                     )
                     if success:
@@ -108,91 +101,11 @@ class ConfluenceToBookstack:
                         self.errors += 1
 
     def clear(self):
-        logger.info("Clearing existing BookStack content")
-        targets = [
-            ("shelf", "/shelves"),
-            ("book", "/books")
-        ]
-
-        for name, endpoint in targets:
-            success, response = self.api_request("GET", endpoint)
-            if not success:
-                logger.error(f"Failed to retrieve {name}s: {response}")
-                self.errors += 1
-                continue
-                
-            items = response.get("data", [])
-            logger.info(f"Found {len(items)} {name}s to delete")
-            
-            for item in items:
-                item_id = item.get("id")
-                item_name = item.get("name", "Unknown")
-                if item_id:
-                    success, _ = self.api_request("DELETE", f"{endpoint}/{item_id}")
-                    if success:
-                        logger.info(f"Deleted {name}: '{item_name}' (ID: {item_id})")
-                        self.deleted_objects[name] += 1
-                    else:
-                        logger.error(f"Failed to delete {name} '{item_name}'")
-                        self.errors += 1
-        
+        self.deleted_objects = self.api_client.clear_content()
         self.print_report(clear=True)
         
     def test_bookstack_endpoints(self):
-        try:
-            if not self.config.BOOKSTACK_URL:
-                logger.error("BookStack URL is missing")
-                return
-
-            response = requests.get(
-                f"{self.config.BOOKSTACK_URL}", headers=self.headers
-            )
-            logger.info(f"Testing BookStack API at {self.config.BOOKSTACK_URL}")
-
-            if response.status_code == 200:
-                logger.info(f"API returned {response.status_code}")
-            else:
-                logger.warning(
-                    f"API returned unexpected status code: {response.status_code}"
-                )
-
-        except Exception as e:
-            logger.error(f"Unexpected error while testing endpoints: {e}")
-
-    def api_request(
-        self, method: str, endpoint: str, data: Dict = None, files: Dict = None
-    ) -> Tuple[bool, Dict]:
-        """Makes an API request to BookStack and returns success status and response data"""
-
-        url = f"{self.config.BOOKSTACK_URL}{endpoint}"
-
-        try:
-            if method.upper() == "GET":
-                response = requests.get(url, headers=self.headers)
-            elif method.upper() == "POST":
-                if files:
-                    response = requests.post(url, headers=self.headers, files=files, data=data)
-                else:
-                    response = requests.post(url, headers=self.headers, json=data)
-            elif method.upper() == "PUT":
-                response = requests.put(url, headers=self.headers, json=data)
-            elif method.upper() == "DELETE":
-                response = requests.delete(url, headers=self.headers)
-            else:
-                return False, {"error": f"Unsupported method: {method}"}
-
-            if response.status_code in [200, 201, 204]:
-                if response.status_code == 204:
-                    return True, {}
-                return True, response.json()
-            else:
-                return False, {
-                    "error": f"HTTP {response.status_code}",
-                    "message": response.text,
-                }
-
-        except Exception as e:
-            return False, {"error": str(e)}
+        return self.api_client.test_endpoints()
 
     def parse_index_html(self, index_path: str) -> Dict:
         try:
@@ -216,6 +129,7 @@ class ConfluenceToBookstack:
 
         except Exception as e:
             logger.error(f"Error parsing {index_path}: {e}")
+            self.errors += 1
             return {}
 
     def parse_ul_hierarchy(self, ul_element: BeautifulSoup, level: int) -> Dict:
@@ -272,8 +186,9 @@ class ConfluenceToBookstack:
             logger.info(f"Books created: {len(self.created_objects['books'])}")
             logger.info(f"Chapters created: {len(self.created_objects['chapters'])}")
             logger.info(f"Pages created: {len(self.created_objects['pages'])}")
-            
-        logger.info(f"Errors encountered: {self.errors}")
+
+        logger.info(f"Errors encountered while processing: {len(self.content_processor.errors)}")
+        logger.info(f"Total errors encountered: {self.errors + len(self.content_processor.errors)}")
 
     def process_item(self, item: Dict, shelf_id: Optional[str] = None, 
                      book_id: Optional[str] = None, chapter_id: Optional[str] = None):
@@ -311,7 +226,7 @@ class ConfluenceToBookstack:
     def add_item(self, type: DepthLevel, endpoint: str, item: Dict, additional_data: Dict = None):
         """Creates an item in BookStack and returns its ID"""
         payload, title = self.generate_payload(item, type, additional_data)
-        success, response = self.api_request("POST", endpoint, payload)
+        success, response = self.api_client.request("POST", endpoint, payload)
         if success:
             item_id = response.get("id")
             logger.info(f"{str(type)} created: '{title}' (ID: {item_id})")
@@ -322,7 +237,7 @@ class ConfluenceToBookstack:
         if type == DepthLevel.PAGE:
             try:
                 updated_payload, title = self.generate_payload(item, type, additional_data, str(item_id))
-                success, response = self.api_request("PUT", f"/pages/{item_id}", updated_payload)
+                success, response = self.api_client.request("PUT", f"/pages/{item_id}", updated_payload)
                 if success:
                     logger.info(f"Page '{title}' updated with processed attachments")
                 else:
@@ -333,75 +248,8 @@ class ConfluenceToBookstack:
             return item_id
         return item_id
 
-    def extract_content_from_file(self, file_path: str, item_type: DepthLevel, page_id: Optional[str] = None) -> Tuple[str, str]:
-        full_path = self.config.SOURCE_PATH + "/" + file_path
-        content = self._read_file_cached(str(full_path))
-
-        soup = BeautifulSoup(content, "html.parser")
-        title = soup.title.get_text(strip=True)
-        description = ""
-        if item_type == DepthLevel.PAGE:
-            main_content = soup.select_one("div#main-content")
-            if main_content:
-                description = self.reconstruct_dom_content(main_content, page_id)
-        
-        
-        return title, description
-
-    def reconstruct_dom_content(self, element: Tag, page_id: Optional[str] = None) -> str:
-        if not element:
-            return ""
-
-        try:
-            canvas = None
-            if element.name is None:
-                return element.string.strip() if element.string else ""
-
-            if element.name == "img":
-                self.process_image_attachment(element, page_id)
-
-            elif element.name == "a" and element.has_attr("data-linked-resource-container-id"):
-                canvas = self.process_pdf_attachment(element, page_id)
-                
-            IMPORTANT_ATTRS = frozenset(
-                [
-                    "id",
-                    "style",
-                    "href",
-                    "src",
-                    "title",
-                    "colspan",
-                    "rowspan"
-                ]
-            )
-                
-            new_soup = BeautifulSoup("", "html.parser")
-            new_elem = new_soup.new_tag(element.name)
-
-            for attr in IMPORTANT_ATTRS:
-                if element.has_attr(attr):
-                    new_elem[attr] = element[attr]
-            for child in element.contents:
-                if hasattr(child, "name"):
-                    rebuilt_child = self.reconstruct_dom_content(child, page_id)
-                    if rebuilt_child:
-                        new_elem.append(BeautifulSoup(rebuilt_child, "html.parser"))
-                else:
-                    text_content = str(child).strip()
-                    if text_content:
-                        new_elem.append(text_content)
-
-            if canvas:
-                new_elem.append(canvas)
-            return str(new_elem)
-
-        except Exception as e:
-            logger.error(f"Error reconstructing content: {e}")
-            self.errors += 1
-            return str(element) if element else ""
-
     def generate_payload(self, item: Dict, item_type: DepthLevel, additional_data: Dict = None, page_id: Optional[str] = None) -> Dict:
-        title, description = self.extract_content_from_file(item["href"], item_type, page_id)
+        title, description = self.content_processor.extract_content_from_file(item["href"], item_type, page_id)
         base_payload = {
             "name": title,
             "tags": [
@@ -422,54 +270,17 @@ class ConfluenceToBookstack:
 
         return base_payload, title
     
-    def process_image_attachment(self, element: Tag, page_id: Optional[str] = None):
-        """Process image attachment and convert to base64"""
+    def upload_attachment(self, file_path: str, filename: str, page_id: str, mime_type: str = None) -> Optional[str]:
+        attachment_id = self.content_processor.upload_attachment(file_path, filename, page_id, mime_type)
         
-        file_path = self.config.SOURCE_PATH + "/" + element["src"]
-        if element["src"].startswith(("data:", "http://", "https://")) or not page_id or not is_image_file(file_path):
-            return    
-        try:
-            image_data_url = image_to_data_url(file_path)
-            element["src"] = image_data_url
-            logger.debug(f"Processed image attachment: {file_path} for page {page_id}")
-                
-        except Exception as e:
-            logger.error(f"Error processing image attachment {file_path}: {e}")
-            self.errors += 1
-
-    def process_pdf_attachment(self, element: Tag, page_id: Optional[str] = None):
-        if not page_id:
-            return
-            
-        container_id = element.get("data-linked-resource-container-id", "")
-        resource_id = element.get("data-linked-resource-id", "")
-        default_alias = element.get("data-linked-resource-default-alias", "")
-        file_path = f"{self.config.SOURCE_PATH}/attachments/{container_id}/{resource_id}.pdf"
-
-        if not os.path.exists(file_path):
-            logger.warning(f"PDF attachment file not found: {file_path}")
-            return
+        if attachment_id and page_id in self.created_objects["pages"]:
+            self.created_objects["pages"][page_id]["attachments"].append({
+                "id": attachment_id,
+                "name": filename,
+                "original_path": file_path
+            })
         
-        try:
-            with open(file_path, "rb") as file:
-                files = {'file': (f"{resource_id}.pdf", file, 'application/pdf')}
-                upload_data = {
-                    "name": default_alias or f"{resource_id}.pdf",
-                    "uploaded_to": page_id
-                }
-                success, response_data = self.api_request("POST", "/attachments", data=upload_data, files=files)
-            if success:
-                logger.info(f"Successfully uploaded PDF: {default_alias or resource_id} to page {page_id}")
-                canvas_html = f'<p><canvas data-pdfurl="http://localhost:6876/attachments/{response_data.get("id")}"></canvas>&nbsp;</p>'
-                if hasattr(element, 'insert_after'):
-                    canvas_soup = BeautifulSoup(canvas_html, "html.parser")
-                    return canvas_soup
-            else:
-                logger.error(f"Failed to upload PDF: {response_data}")
+        return attachment_id
 
-                
-        except Exception as e:
-            logger.error(f"Error uploading PDF {file_path}: {e}")
-            self.errors += 1
         
             
