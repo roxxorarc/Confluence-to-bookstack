@@ -2,6 +2,7 @@ import base64
 import enum
 import logging
 import mimetypes
+import re
 import sys
 from typing import Optional, Tuple
 
@@ -91,7 +92,6 @@ def image_to_data_url(image_path: str) -> Optional[str]:
         base64_data = file_to_b64(image_path)
         if not base64_data:
             return None
-        
         mime_type, _ = mimetypes.guess_type(image_path)
         if not mime_type or not mime_type.startswith('image/'):
             ext = image_path.lower().split('.')[-1]
@@ -104,9 +104,16 @@ def image_to_data_url(image_path: str) -> Optional[str]:
             }
             mime_type = mime_map.get(ext, 'image/png')
         data_url = f"data:{mime_type};base64,{base64_data}"
-        
         return data_url
         
     except Exception as e:
         logger.error(f"Error creating data URL for {image_path}: {e}")
         return None
+
+
+def title_to_slug(title: str) -> str:
+    slug = re.sub(r'_\d+$', '', title)
+    slug = slug.lower().replace('_', '-').replace(' ', '-')
+    slug = re.sub(r'[^\w-]', '', slug)
+    slug = re.sub(r'-+', '-', slug).strip('-')
+    return slug

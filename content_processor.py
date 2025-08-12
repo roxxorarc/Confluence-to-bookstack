@@ -1,12 +1,10 @@
-import mimetypes
 import os
 from typing import Optional, Tuple
 from bs4 import BeautifulSoup, Tag
-from utils import image_to_data_url, is_image_file, logger, DepthLevel
+from utils import image_to_data_url, is_image_file, logger, DepthLevel, title_to_slug
 
 
 class ContentProcessor:
-    
     def __init__(self, config, api_client):
         self.config = config
         self.api_client = api_client
@@ -28,6 +26,7 @@ class ContentProcessor:
         
         if not os.path.exists(file_path):
             logger.warning(f"Attachment file not found: {file_path}")
+            self.errors.append((filename, "File not found"))
             return None
         
         try:
@@ -93,9 +92,6 @@ class ContentProcessor:
                     continue
                 filename = link.get_text(strip=True)
                 file_path = f"{self.config.SOURCE_PATH}/{href}"
-                mime_type = ""
-                parent_text = link.parent.get_text() if link.parent else ""
-                
                 self.upload_attachment(file_path, filename, page_id)
 
     def extract_content_from_file(self, file_path: str, item_type: DepthLevel, page_id: Optional[str] = None) -> Tuple[str, str]:
@@ -127,8 +123,14 @@ class ContentProcessor:
                 return element.string.strip() if element.string else ""
             if element.name == "img" and element.get("data-linked-resource-content-type", "").startswith("image"):
                 self.process_inline_img(element, page_id)
-            elif element.name == "a" and element.get("data-linked-resource-content-type", "") == "application/pdf":
+            elif element.name == "a" and element.get("data-nice-type", "").startswith("PDF"):
                 canvas = self.process_inline_pdf(element, page_id)
+                print(canvas)
+            elif element.name == "a" and element.has_attr("href"):
+                href = element["href"]
+                if href.endswith(".html") and not href.startswith(("http://", "https://", "mailto:", "#")):
+                    self.process_internal_link(element, href)
+            
             IMPORTANT_ATTRS = frozenset([
                 "id", "style", "href", "src", "title", "colspan", "rowspan"
             ]) 
@@ -153,3 +155,20 @@ class ContentProcessor:
             logger.error(f"Error reconstructing content: {e}")
             self.errors.append((str(element), str(e)))
             return str(element) if element else ""
+
+    def process_internal_link(self, element: Tag, href: str):
+        file_path = os.path.join(self.config.SOURCE_PATH, href)
+        try:
+            if os.path.exists(file_path):
+                with open(file_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+                soup = BeautifulSoup(content, "html.parser")
+                title = soup.title.get_text(strip=True)
+                element["href"] = title_to_slug(title)
+            else:
+                logger.warning(f"Internal link file not found: {file_path}")
+                self.errors.append((file_path, "File not found for internal link"))
+        except Exception as e:
+            logger.error(f"Error processing internal link {href}: {e}")
+            self.errors.append((href, str(e)))
+            return None

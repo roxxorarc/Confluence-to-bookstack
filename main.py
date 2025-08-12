@@ -10,13 +10,12 @@ def main():
     if args.clear:
         migrator.clear()
         logger.info("Data cleared")
-        exit(0)
-    try:
-        migrator.run()
-    except Exception as e:
-        logger.error(f"Migration failed: {e}")
-
-    logger.info("Migration completed successfully.")
+    else:
+        try:
+            migrator.run()
+            logger.info("Migration completed successfully.")
+        except Exception as e:
+            logger.error(f"Migration has been interrupted: {e}")
 
 
 if __name__ == "__main__":

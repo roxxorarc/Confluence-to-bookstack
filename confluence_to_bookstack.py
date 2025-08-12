@@ -62,7 +62,6 @@ class ConfluenceToBookstack:
         self.created_objects["pages"][page_id] = {
             "title": item["title"],
             "id": page_id,
-            "attachments": []
         }
 
     def run(self):
@@ -70,6 +69,7 @@ class ConfluenceToBookstack:
         self.find_index_files()
         self.link_books_to_shelves()
         self.print_report()
+        
 
     def link_books_to_shelves(self):
         for shelf in self.created_objects["shelves"].values():
