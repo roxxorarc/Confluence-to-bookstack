@@ -1,10 +1,13 @@
 from functools import lru_cache
 import os
-from typing import Dict, Optional, Tuple
-from bs4 import BeautifulSoup
+from typing import Dict, Optional
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
 from utils import logger, DepthLevel
 from content_processor import ContentProcessor
 from bookstack_client import BookStackClient
+import warnings
+
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
 
 
 class ConfluenceToBookstack:
@@ -103,9 +106,6 @@ class ConfluenceToBookstack:
     def clear(self):
         self.deleted_objects = self.api_client.clear_content()
         self.print_report(clear=True)
-        
-    def test_bookstack_endpoints(self):
-        return self.api_client.test_endpoints()
 
     def parse_index_html(self, index_path: str) -> Dict:
         try:
@@ -229,7 +229,7 @@ class ConfluenceToBookstack:
         success, response = self.api_client.request("POST", endpoint, payload)
         if success:
             item_id = response.get("id")
-            logger.info(f"{str(type)} created: '{title}' (ID: {item_id})")
+            # logger.info(f"{str(type)} created: '{title}' (ID: {item_id})")
         else:
             logger.error(f"Failed to create {str(type)} '{title}': {response}")
             self.errors += 1
@@ -241,7 +241,7 @@ class ConfluenceToBookstack:
                 if success:
                     logger.info(f"Page '{title}' updated with processed attachments")
                 else:
-                    logger.warning(f"Page created but failed to update with attachments")   
+                    logger.warning(f"Page '{title}' created but failed to update with attachments")
             except Exception as e:
                 logger.error(f"Error updating page with attachments: {e}")
                 self.errors += 1
@@ -269,18 +269,5 @@ class ConfluenceToBookstack:
             base_payload.update(additional_data)
 
         return base_payload, title
-    
-    def upload_attachment(self, file_path: str, filename: str, page_id: str, mime_type: str = None) -> Optional[str]:
-        attachment_id = self.content_processor.upload_attachment(file_path, filename, page_id, mime_type)
-        
-        if attachment_id and page_id in self.created_objects["pages"]:
-            self.created_objects["pages"][page_id]["attachments"].append({
-                "id": attachment_id,
-                "name": filename,
-                "original_path": file_path
-            })
-        
-        return attachment_id
-
         
             

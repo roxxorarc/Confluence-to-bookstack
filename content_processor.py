@@ -21,7 +21,7 @@ class ContentProcessor:
             self.uploaded_attachments[page_id] = {}
         self.uploaded_attachments[page_id][file_path] = attachment_id
 
-    def upload_attachment(self, file_path: str, filename: str, page_id: str, mime_type: str = None) -> Optional[str]:
+    def upload_attachment(self, file_path: str, filename: str, page_id: str) -> Optional[str]:
         if self.is_attachment_uploaded(page_id, file_path):
             logger.debug(f"Attachment already uploaded: {filename}")
             return self.uploaded_attachments[page_id][file_path]
@@ -29,15 +29,10 @@ class ContentProcessor:
         if not os.path.exists(file_path):
             logger.warning(f"Attachment file not found: {file_path}")
             return None
-            
-        if not mime_type:
-            mime_type, _ = mimetypes.guess_type(filename)
-            if not mime_type:
-                mime_type = "application/octet-stream"
         
         try:
             with open(file_path, "rb") as file:
-                files = {'file': (filename, file, mime_type)}
+                files = {'file': (filename, file)}
                 upload_data = {
                     "name": filename,
                     "uploaded_to": page_id
@@ -68,7 +63,7 @@ class ContentProcessor:
         file_path = f"{self.config.SOURCE_PATH}/attachments/{container_id}/{resource_id}.pdf"
         filename = default_alias or f"{resource_id}.pdf"
         
-        attachment_id = self.upload_attachment(file_path, filename, page_id, "application/pdf")
+        attachment_id = self.upload_attachment(file_path, filename, page_id)
         if attachment_id:
             canvas_html = f'<p><canvas data-pdfurl="/attachments/{attachment_id}"></canvas>&nbsp;</p>'
             canvas_soup = BeautifulSoup(canvas_html, "html.parser")
@@ -98,17 +93,10 @@ class ContentProcessor:
                     continue
                 filename = link.get_text(strip=True)
                 file_path = f"{self.config.SOURCE_PATH}/{href}"
-                mime_type = "application/octet-stream" 
+                mime_type = ""
                 parent_text = link.parent.get_text() if link.parent else ""
-                if "(application/pdf)" in parent_text:
-                    mime_type = "application/pdf"
-                elif "(image/png)" in parent_text:
-                    mime_type = "image/png"
-                elif "(image/jpeg)" in parent_text or "(image/jpg)" in parent_text:
-                    mime_type = "image/jpeg"
-                elif "(application/octet-stream)" in parent_text:
-                    mime_type = "application/octet-stream"
-                self.upload_attachment(file_path, filename, page_id, mime_type)
+                
+                self.upload_attachment(file_path, filename, page_id)
 
     def extract_content_from_file(self, file_path: str, item_type: DepthLevel, page_id: Optional[str] = None) -> Tuple[str, str]:
         full_path = self.config.SOURCE_PATH + "/" + file_path
@@ -137,9 +125,9 @@ class ContentProcessor:
             canvas = None
             if element.name is None:
                 return element.string.strip() if element.string else ""
-            if element.name == "img":
+            if element.name == "img" and element.get("data-linked-resource-content-type", "").startswith("image"):
                 self.process_inline_img(element, page_id)
-            elif element.name == "a" and element.has_attr("data-linked-resource-container-id"):
+            elif element.name == "a" and element.get("data-linked-resource-content-type", "") == "application/pdf":
                 canvas = self.process_inline_pdf(element, page_id)
             IMPORTANT_ATTRS = frozenset([
                 "id", "style", "href", "src", "title", "colspan", "rowspan"
